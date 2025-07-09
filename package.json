@@ -2,20 +2,37 @@
   "name": "spo2-mobile-app",
   "version": "1.0.0",
   "main": "index.js",
+  "homepage": "https://KacperLa.github.io/AQEye",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "build": "expo export -p web",
+    "deploy": "gh-pages -d dist",
+    "predeploy": "npm run build"
   },
   "dependencies": {
+    "@expo/metro-runtime": "~5.0.4",
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "expo": "~53.0.10",
+    "expo-device": "~7.1.4",
+    "expo-font": "~13.3.1",
+    "expo-linear-gradient": "~14.1.5",
+    "expo-linking": "~7.1.5",
     "expo-status-bar": "~2.2.3",
     "react": "19.0.0",
-    "react-native": "0.79.3"
+    "react-dom": "19.0.0",
+    "react-native": "0.79.3",
+    "react-native-ble-manager": "^12.1.5",
+    "react-native-ble-plx": "^3.5.0",
+    "react-native-chart-kit": "^6.12.0",
+    "react-native-svg": "^15.12.0",
+    "react-native-web": "^0.20.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.20.0"
+    "@babel/core": "^7.20.0",
+    "gh-pages": "^6.3.0"
   },
   "private": true
 }
