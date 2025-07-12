@@ -11,9 +11,12 @@ import { LineChart } from 'react-native-chart-kit';
 
 const { width } = Dimensions.get('window');
 
-const DataChart = ({ data, title, color, unit }) => {
+const DataChart = ({ data, title, color, unit, chartWidth }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
+
+  // Use provided width or default to screen width minus padding
+  const chartDisplayWidth = chartWidth || (width - 40);
 
   useEffect(() => {
     if (data && data.length > 0) {
@@ -152,19 +155,21 @@ const DataChart = ({ data, title, color, unit }) => {
       </View>
       
       {chartData.datasets[0].data.length > 0 && (
-        <LineChart
-          data={chartData}
-          width={width - 40}
-          height={180}
-          chartConfig={chartConfig}
-          bezier
-          style={styles.chart}
-          withHorizontalLabels={true}
-          withVerticalLabels={false}
-          withDots={true}
-          withShadow={true}
-          withScrollableDot={false}
-        />
+        <View style={styles.chartWrapper}>
+          <LineChart
+            data={chartData}
+            width={chartDisplayWidth}
+            height={180}
+            chartConfig={chartConfig}
+            bezier
+            style={styles.chart}
+            withHorizontalLabels={true}
+            withVerticalLabels={false}
+            withDots={true}
+            withShadow={true}
+            withScrollableDot={false}
+          />
+        </View>
       )}
       
       <View style={styles.footer}>
@@ -236,6 +241,11 @@ const styles = StyleSheet.create({
   trendText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  chartWrapper: {
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chart: {
     marginVertical: 8,

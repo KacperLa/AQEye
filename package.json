@@ -8,8 +8,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build": "expo export -p web && bash fix-paths.sh",
-    "deploy": "gh-pages -d dist",
+    "build": "expo export --platform web",
+    "deploy": "npm run build && node fix-paths.js && gh-pages -d dist",
     "predeploy": "npm run build"
   },
   "dependencies": {

@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "SpO2 Monitor",
-    "slug": "spo2-monitor",
+    "name": "AirQ Monitor",
+    "slug": "airq-monitor",
     "version": "1.0.0",
-    "description": "Real-time blood oxygen and heart rate monitoring with Bluetooth connectivity",
+    "description": "Real-time air quality monitoring with Bluetooth connectivity",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -11,15 +11,15 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1a1a2e"
+      "backgroundColor": "rgb(0, 0, 0)"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.yourcompany.spo2monitor",
+      "bundleIdentifier": "com.yourcompany.airqmonitor",
       "buildNumber": "1.0.0",
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to SpO2 monitoring devices for health data collection.",
-        "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect to SpO2 monitoring devices for health data collection.",
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to AirQ monitoring devices for air quality data collection.",
+        "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect to AirQ monitoring devices for air quality data collection.",
         "NSLocationWhenInUseUsageDescription": "This app needs location access for Bluetooth device scanning (required by iOS for BLE)."
       },
       "config": {
@@ -29,10 +29,10 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1a1a2e"
+        "backgroundColor": "rgb(0, 0, 0)"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.yourcompany.spo2monitor",
+      "package": "com.yourcompany.airqmonitor",
       "versionCode": 1,
       "permissions": [
         "android.permission.BLUETOOTH",
@@ -44,7 +44,10 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single",
+      "baseUrl": "/AQEye/"
     },
     "plugins": [
       "expo-font"

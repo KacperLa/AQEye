@@ -9,6 +9,9 @@ const LIVE_DATA_UUID = '12345678-1234-1234-1234-123456789abd';
 const LOGGED_DATA_UUID = '12345678-1234-1234-1234-123456789abe';
 const BATTERY_UUID = '12345678-1234-1234-1234-123456789abf';
 const POWER_MODE_UUID = '12345678-1234-1234-1234-123456789ac0';
+const RTC_TIME_UUID = '12345678-1234-1234-1234-123456789ac1';
+const CHUNK_INFO_UUID = '12345678-1234-1234-1234-123456789ac2';
+const CHUNK_REQUEST_UUID = '87654321-4321-4321-4321-cba987654321';
 
 const DEVICE_NAME = 'AirQ Sensor';
 
@@ -38,7 +41,8 @@ class PlatformBluetoothService {
       batteryUpdate: [],
       powerModeUpdate: [],
       error: [],
-      autoConnectAttempt: []
+      autoConnectAttempt: [],
+      downloadProgress: []
     };
     
     // Initialize platform-specific service
@@ -74,6 +78,9 @@ class PlatformBluetoothService {
     this.loggedDataCharacteristic = null;
     this.batteryCharacteristic = null;
     this.powerModeCharacteristic = null;
+    this.rtcTimeCharacteristic = null;
+    this.chunkInfoCharacteristic = null;
+    this.chunkRequestCharacteristic = null;
   }
 
   // Initialize mobile BLE service
@@ -294,15 +301,20 @@ class PlatformBluetoothService {
       
       // Set up notifications with error handling - don't let this fail the connection
       try {
-        await this.setupWebNotifications();
+        const notificationsSuccess = await this.setupWebNotifications();
+        
+        if (!notificationsSuccess) {
+          console.log('Notifications failed, falling back to polling...');
+          this.startPolling();
+        } else {
+          console.log('Using GATT notifications - no polling needed');
+        }
       } catch (error) {
         console.error('Notification setup failed, but continuing with connection:', error);
         // Connection is still valid even if notifications fail
+        console.log('Starting polling as fallback mechanism...');
+        this.startPolling();
       }
-      
-      // Start polling as fallback if notifications don't work properly
-      console.log('Starting polling as fallback mechanism...');
-      this.startPolling();
       
       if (this.connectionCallback) {
         this.connectionCallback(true);
@@ -331,10 +343,19 @@ class PlatformBluetoothService {
       
       // Discover services and characteristics
       await this.device.discoverAllServicesAndCharacteristics();
-      console.log('Mobile BLE services discovered');      this.isConnected = true;
+      console.log('Mobile BLE services discovered');
+      
+      this.isConnected = true;
       
       // Set up notifications
-      await this.setupMobileNotifications();
+      const notificationsSuccess = await this.setupMobileNotifications();
+      
+      if (!notificationsSuccess) {
+        console.log('Notifications failed, falling back to polling...');
+        this.startMobilePolling();
+      } else {
+        console.log('Using BLE notifications - no polling needed');
+      }
       
       if (this.connectionCallback) {
         this.connectionCallback(true);
@@ -362,13 +383,15 @@ class PlatformBluetoothService {
 
   // Web Bluetooth notifications setup
   async setupWebNotifications() {
+    let notificationsSetup = false;
+    
     try {
       console.log('Setting up Web Bluetooth notifications...');
       
       // Check if server is still connected
       if (!this.server || !this.server.connected) {
         console.error('GATT server is not connected');
-        return;
+        return false;
       }
       
       // Get AirQ Service with better error handling
@@ -376,10 +399,13 @@ class PlatformBluetoothService {
       try {
         airqService = await this.server.getPrimaryService(AIRQ_SERVICE_UUID);
         console.log('AirQ service found');
+        
+        // Debug: List all available characteristics
+        await this.debugListCharacteristics();
       } catch (error) {
         console.error('Failed to get AirQ service:', error);
         console.log('Available services might be limited. Trying to continue...');
-        return;
+        return false;
       }
       
       // Set up Live Data characteristic (most important)
@@ -390,21 +416,27 @@ class PlatformBluetoothService {
         try {
           await this.liveDataCharacteristic.startNotifications();
           console.log('Live data notifications started successfully');
+          notificationsSetup = true;
           
           this.liveDataCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
             const value = event.target.value;
             const dataString = new TextDecoder().decode(value);
-            console.log('Received AirQ data:', dataString);
+            console.log('Received AirQ data via notification:', dataString);
             
             // Parse comma-separated values: "pm1,pm25,pm10,battery"
             const values = dataString.split(',').map(val => parseFloat(val.trim()));
             
             if (values.length >= 4) {
+              const pm25 = values[1] || 0;
+              const calculatedAqi = this.calculateAQI(pm25);
+              
               const eventData = {
                 pm1: values[0] || 0,
-                pm25: values[1] || 0,
+                pm25: pm25,
                 pm10: values[2] || 0,
                 battery: values[3] || 0,
+                aqi: calculatedAqi,
+                error: null,
                 timestamp: Date.now()
               };
               
@@ -491,17 +523,59 @@ class PlatformBluetoothService {
         console.error('Failed to get power mode characteristic:', error);
       }
 
-      console.log('Web Bluetooth notifications setup completed (with some potential limitations)');
+      // Set up Logged Data characteristic (for data download)
+      try {
+        this.loggedDataCharacteristic = await airqService.getCharacteristic(LOGGED_DATA_UUID);
+        console.log('Logged data characteristic set up successfully');
+      } catch (error) {
+        console.error('Failed to get logged data characteristic:', error);
+      }
+
+      // Set up RTC Time characteristic (for time synchronization)
+      try {
+        this.rtcTimeCharacteristic = await airqService.getCharacteristic(RTC_TIME_UUID);
+        console.log('RTC time characteristic set up successfully');
+        
+        // Automatically sync time when connected
+        this.syncRTCTime();
+      } catch (error) {
+        console.error('Failed to get RTC time characteristic:', error);
+      }
+
+      // Set up chunk management characteristics
+      try {
+        console.log('Attempting to get chunk info characteristic...');
+        this.chunkInfoCharacteristic = await airqService.getCharacteristic(CHUNK_INFO_UUID);
+        console.log('✅ Chunk info characteristic set up successfully');
+      } catch (error) {
+        console.error('❌ Failed to get chunk info characteristic:', error);
+        this.chunkInfoCharacteristic = null;
+      }
+
+      try {
+        console.log('Attempting to get chunk request characteristic...');
+        this.chunkRequestCharacteristic = await airqService.getCharacteristic(CHUNK_REQUEST_UUID);
+        console.log('✅ Chunk request characteristic set up successfully');
+      } catch (error) {
+        console.error('❌ Failed to get chunk request characteristic:', error);
+        this.chunkRequestCharacteristic = null;
+      }
+
+      console.log('Web Bluetooth notifications setup completed');
+      return notificationsSetup;
     } catch (error) {
       console.error('Error setting up Web Bluetooth notifications:', error);
       // Don't throw - just log and continue
       console.log('Continuing with limited notification support...');
+      return false;
     }
   }
 
   // Mobile BLE notifications setup
   async setupMobileNotifications() {
     try {
+      console.log('Setting up mobile BLE notifications...');
+      
       // Live Data notifications
       await this.device.monitorCharacteristicForService(
         AIRQ_SERVICE_UUID,
@@ -515,17 +589,22 @@ class PlatformBluetoothService {
 
           if (characteristic?.value) {
             const dataString = this.decodeBase64ToString(characteristic.value);
-            console.log('Received AirQ data:', dataString);
+            console.log('Received AirQ data via notification:', dataString);
             
             // Parse comma-separated values: "pm1,pm25,pm10,battery"
             const values = dataString.split(',').map(val => parseFloat(val.trim()));
             
             if (values.length >= 4) {
+              const pm25 = values[1] || 0;
+              const calculatedAqi = this.calculateAQI(pm25);
+              
               const eventData = {
                 pm1: values[0] || 0,
-                pm25: values[1] || 0,
+                pm25: pm25,
                 pm10: values[2] || 0,
                 battery: values[3] || 0,
+                aqi: calculatedAqi,
+                error: null,
                 timestamp: Date.now()
               };
               
@@ -538,6 +617,7 @@ class PlatformBluetoothService {
           }
         }
       );
+      console.log('Live data notifications set up successfully');
 
       // Battery notifications
       await this.device.monitorCharacteristicForService(
@@ -567,6 +647,7 @@ class PlatformBluetoothService {
           }
         }
       );
+      console.log('Battery notifications set up successfully');
 
       // Power Mode notifications
       await this.device.monitorCharacteristicForService(
@@ -595,8 +676,10 @@ class PlatformBluetoothService {
           }
         }
       );
+      console.log('Power mode notifications set up successfully');
 
-      console.log('Mobile BLE notifications set up successfully');
+      console.log('All mobile BLE notifications set up successfully');
+      return true;
     } catch (error) {
       console.error('Error setting up mobile BLE notifications:', error);
       throw error;
@@ -620,7 +703,7 @@ class PlatformBluetoothService {
   // Disconnect from device
   async disconnect() {
     try {
-      this.stopPolling();
+      this.stopPolling(); // This will work for both web and mobile polling
       
       if (this.device && this.isConnected) {
         if (this.isWeb) {
@@ -833,6 +916,123 @@ class PlatformBluetoothService {
     }
   }
 
+  // RTC Time Synchronization
+  async syncRTCTime() {
+    try {
+      console.log('Syncing RTC time with device...');
+      
+      // Get current time as Unix timestamp
+      const currentTime = Math.floor(Date.now() / 1000);
+      
+      if (this.isWeb) {
+        return this.syncRTCTimeWeb(currentTime);
+      } else {
+        return this.syncRTCTimeMobile(currentTime);
+      }
+    } catch (error) {
+      console.error('Failed to sync RTC time:', error);
+      this.emit('error', 'Failed to sync RTC time: ' + error.message);
+      throw error;
+    }
+  }
+
+  // Web Bluetooth RTC time sync
+  async syncRTCTimeWeb(timestamp) {
+    if (!this.rtcTimeCharacteristic || !this.server || !this.server.connected) {
+      throw new Error('Device not connected or RTC time characteristic not available');
+    }
+
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(timestamp.toString());
+      await this.rtcTimeCharacteristic.writeValue(data);
+      console.log('RTC time synced successfully (Web):', new Date(timestamp * 1000));
+      return true;
+    } catch (error) {
+      console.error('Web Bluetooth RTC time sync error:', error);
+      throw error;
+    }
+  }
+
+  // Mobile BLE RTC time sync
+  async syncRTCTimeMobile(timestamp) {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const base64Value = btoa(timestamp.toString());
+      await this.device.writeCharacteristicWithResponseForService(
+        AIRQ_SERVICE_UUID,
+        RTC_TIME_UUID,
+        base64Value
+      );
+      console.log('RTC time synced successfully (Mobile):', new Date(timestamp * 1000));
+      return true;
+    } catch (error) {
+      console.error('Mobile BLE RTC time sync error:', error);
+      throw error;
+    }
+  }
+
+  // Read current RTC time from device
+  async readRTCTime() {
+    try {
+      if (this.isWeb) {
+        return this.readRTCTimeWeb();
+      } else {
+        return this.readRTCTimeMobile();
+      }
+    } catch (error) {
+      console.error('Failed to read RTC time:', error);
+      return null;
+    }
+  }
+
+  // Web Bluetooth RTC time read
+  async readRTCTimeWeb() {
+    if (!this.rtcTimeCharacteristic || !this.server || !this.server.connected) {
+      throw new Error('Device not connected or RTC time characteristic not available');
+    }
+
+    try {
+      const value = await this.rtcTimeCharacteristic.readValue();
+      const timeString = new TextDecoder().decode(value);
+      const timestamp = parseInt(timeString);
+      console.log('RTC time read (Web):', new Date(timestamp * 1000));
+      return timestamp;
+    } catch (error) {
+      console.error('Web Bluetooth RTC time read error:', error);
+      throw error;
+    }
+  }
+
+  // Mobile BLE RTC time read
+  async readRTCTimeMobile() {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const characteristic = await this.device.readCharacteristicForService(
+        AIRQ_SERVICE_UUID,
+        RTC_TIME_UUID
+      );
+      
+      if (characteristic?.value) {
+        const timeString = this.decodeBase64ToString(characteristic.value);
+        const timestamp = parseInt(timeString);
+        console.log('RTC time read (Mobile):', new Date(timestamp * 1000));
+        return timestamp;
+      } else {
+        throw new Error('No RTC time received from device');
+      }
+    } catch (error) {
+      console.error('Mobile BLE RTC time read error:', error);
+      throw error;
+    }
+  }
+
   // Fallback polling mechanism for when notifications don't work
   startPolling() {
     if (this.pollingInterval) {
@@ -853,11 +1053,16 @@ class PlatformBluetoothService {
           const values = dataString.split(',').map(val => parseFloat(val.trim()));
           
           if (values.length >= 4) {
+            const pm25 = values[1] || 0;
+            const calculatedAqi = this.calculateAQI(pm25);
+            
             const eventData = {
               pm1: values[0] || 0,
-              pm25: values[1] || 0,
+              pm25: pm25,
               pm10: values[2] || 0,
               battery: values[3] || 0,
+              aqi: calculatedAqi,
+              error: null,
               timestamp: Date.now()
             };
             
@@ -878,6 +1083,534 @@ class PlatformBluetoothService {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
+    }
+  }
+
+  // Mobile BLE polling fallback (only used if notifications fail)
+  startMobilePolling() {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+    }
+    
+    this.pollingInterval = setInterval(async () => {
+      if (!this.isConnected || !this.device) {
+        return;
+      }
+      
+      try {
+        // Read live data characteristic
+        const characteristic = await this.device.readCharacteristicForService(
+          AIRQ_SERVICE_UUID,
+          LIVE_DATA_UUID
+        );
+        
+        if (characteristic?.value) {
+          const dataString = this.decodeBase64ToString(characteristic.value);
+          console.log('Polled AirQ data (mobile):', dataString);
+          
+          const values = dataString.split(',').map(val => parseFloat(val.trim()));
+          
+          if (values.length >= 4) {
+            const pm25 = values[1] || 0;
+            const calculatedAqi = this.calculateAQI(pm25);
+            
+            const eventData = {
+              pm1: values[0] || 0,
+              pm25: pm25,
+              pm10: values[2] || 0,
+              battery: values[3] || 0,
+              aqi: calculatedAqi,
+              error: null,
+              timestamp: Date.now()
+            };
+            
+            if (this.airQualityCallback) {
+              this.airQualityCallback(eventData);
+            }
+            
+            this.emit('airQualityUpdate', eventData);
+          }
+        }
+      } catch (error) {
+        console.error('Mobile polling failed:', error);
+      }
+    }, 5000); // Poll every 5 seconds
+  }
+
+  // Calculate AQI from PM2.5 values using US EPA standard
+  calculateAQI(pm25) {
+    if (pm25 < 0 || isNaN(pm25)) {
+      return 0;
+    }
+
+    // US EPA PM2.5 AQI breakpoints
+    const breakpoints = [
+      { aqi: [0, 50], pm25: [0, 12.0] },
+      { aqi: [51, 100], pm25: [12.1, 35.4] },
+      { aqi: [101, 150], pm25: [35.5, 55.4] },
+      { aqi: [151, 200], pm25: [55.5, 150.4] },
+      { aqi: [201, 300], pm25: [150.5, 250.4] },
+      { aqi: [301, 500], pm25: [250.5, 500.4] }
+    ];
+
+    for (const bp of breakpoints) {
+      if (pm25 >= bp.pm25[0] && pm25 <= bp.pm25[1]) {
+        // Linear interpolation formula
+        const aqi = ((bp.aqi[1] - bp.aqi[0]) / (bp.pm25[1] - bp.pm25[0])) * (pm25 - bp.pm25[0]) + bp.aqi[0];
+        return Math.round(aqi);
+      }
+    }
+
+    // If PM2.5 is above all breakpoints, return max AQI
+    return 500;
+  }
+
+  // Download logged data from Arduino flash storage
+  async downloadLoggedData() {
+    try {
+      console.log('Downloading logged data from device using chunked transfer...');
+
+      if (this.isWeb) {
+        return this.downloadLoggedDataWeb();
+      } else {
+        return this.downloadLoggedDataMobile();
+      }
+    } catch (error) {
+      console.error('Failed to download logged data:', error);
+      this.emit('error', 'Failed to download logged data: ' + error.message);
+      throw error;
+    }
+  }
+
+  // Web Bluetooth logged data download with chunking
+  async downloadLoggedDataWeb() {
+    if (!this.loggedDataCharacteristic || !this.server || !this.server.connected) {
+      throw new Error('Device not connected or logged data characteristic not available');
+    }
+
+    console.log('=== CHUNKED DOWNLOAD DEBUG ===');
+    console.log('Chunk info characteristic:', this.chunkInfoCharacteristic ? 'Available' : 'NOT AVAILABLE');
+    console.log('Chunk request characteristic:', this.chunkRequestCharacteristic ? 'Available' : 'NOT AVAILABLE');
+
+    if (!this.chunkInfoCharacteristic || !this.chunkRequestCharacteristic) {
+      console.warn('Chunk characteristics not available, falling back to single read');
+      console.log('=== FALLING BACK TO LEGACY ===');
+      return this.downloadLoggedDataWebLegacy();
+    }
+
+    try {
+      console.log('=== STARTING CHUNKED TRANSFER ===');
+      // Step 1: Request data preparation (send -1 to chunk request)
+      console.log('Step 1: Requesting data preparation...');
+      this.emit('downloadProgress', { stage: 'preparing', progress: 0, message: 'Preparing data for download...' });
+      
+      const encoder = new TextEncoder();
+      await this.chunkRequestCharacteristic.writeValue(encoder.encode('-1'));
+      console.log('Data preparation request sent');
+      
+      // Small delay to let Arduino prepare the data
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 2: Get chunk info (totalChunks, currentChunk)
+      console.log('Step 2: Reading chunk info...');
+      this.emit('downloadProgress', { stage: 'info', progress: 5, message: 'Getting chunk information...' });
+      
+      const chunkInfoValue = await this.chunkInfoCharacteristic.readValue();
+      const chunkInfoString = new TextDecoder().decode(chunkInfoValue);
+      console.log('Raw chunk info received:', chunkInfoString);
+      const [totalChunks, currentChunk] = chunkInfoString.split(',').map(s => parseInt(s.trim()));
+      
+      console.log(`Data prepared for chunked transfer: ${totalChunks} chunks, current: ${currentChunk}`);
+
+      if (totalChunks <= 0) {
+        console.log('No data available on device');
+        this.emit('downloadProgress', { stage: 'complete', progress: 100, message: 'No data available on device' });
+        return [];
+      }
+
+      // Step 3: Download all chunks
+      let completeDataString = '';
+      
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        console.log(`Step 3.${chunkIndex + 1}: Requesting chunk ${chunkIndex}/${totalChunks - 1}...`);
+        
+        const chunkProgress = Math.round(((chunkIndex / totalChunks) * 90) + 10); // 10-100% range
+        this.emit('downloadProgress', { 
+          stage: 'downloading', 
+          progress: chunkProgress, 
+          message: `Downloading chunk ${chunkIndex + 1} of ${totalChunks}...`,
+          currentChunk: chunkIndex + 1,
+          totalChunks: totalChunks
+        });
+        
+        // Request specific chunk
+        await this.chunkRequestCharacteristic.writeValue(encoder.encode(chunkIndex.toString()));
+        console.log(`Chunk ${chunkIndex} request sent`);
+        
+        // Small delay between chunk requests
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Read the chunk data
+        const chunkValue = await this.loggedDataCharacteristic.readValue();
+        const chunkData = new TextDecoder().decode(chunkValue);
+        
+        console.log(`Received chunk ${chunkIndex}: ${chunkData.length} characters - "${chunkData.substring(0, 100)}${chunkData.length > 100 ? '...' : ''}"`);
+        completeDataString += chunkData;
+      }
+
+      console.log(`=== CHUNKED TRANSFER COMPLETE ===`);
+      console.log(`Complete data assembled: ${completeDataString.length} characters`);
+      console.log(`First 200 chars: "${completeDataString.substring(0, 200)}${completeDataString.length > 200 ? '...' : ''}"`);
+      
+      this.emit('downloadProgress', { stage: 'parsing', progress: 95, message: 'Parsing downloaded data...' });
+      const parsedData = this.parseLoggedData(completeDataString);
+      
+      this.emit('downloadProgress', { 
+        stage: 'complete', 
+        progress: 100, 
+        message: `Download complete! Received ${parsedData.length} entries`,
+        totalEntries: parsedData.length
+      });
+      
+      console.log(`Chunked transfer completed successfully. Received ${parsedData.length} entries`);
+      return parsedData;
+      
+    } catch (error) {
+      console.error('Chunked download failed, trying legacy method:', error);
+      this.emit('downloadProgress', { stage: 'error', progress: 0, message: 'Chunked download failed, trying legacy method...' });
+      return this.downloadLoggedDataWebLegacy();
+    }
+  }
+
+  // Fallback for devices without chunking support
+  async downloadLoggedDataWebLegacy() {
+    try {
+      console.log('=== LEGACY DOWNLOAD DEBUG ===');
+      this.emit('downloadProgress', { stage: 'downloading', progress: 50, message: 'Downloading data (legacy mode)...' });
+      
+      const value = await this.loggedDataCharacteristic.readValue();
+      const dataString = new TextDecoder().decode(value);
+      console.log(`Legacy: Raw logged data received: ${dataString.length} characters`);
+      console.log(`Legacy: Data content: "${dataString.substring(0, 200)}${dataString.length > 200 ? '...' : ''}"`);
+      
+      this.emit('downloadProgress', { stage: 'parsing', progress: 90, message: 'Parsing downloaded data...' });
+      const parsedData = this.parseLoggedData(dataString);
+      
+      this.emit('downloadProgress', { 
+        stage: 'complete', 
+        progress: 100, 
+        message: `Download complete! Received ${parsedData.length} entries`,
+        totalEntries: parsedData.length
+      });
+      
+      console.log(`Legacy: Parsed ${parsedData.length} entries`);
+      return parsedData;
+    } catch (error) {
+      console.error('Legacy Web Bluetooth logged data read error:', error);
+      throw error;
+    }
+  }
+
+  // Mobile BLE logged data download with chunking
+  async downloadLoggedDataMobile() {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      // Check if chunk characteristics are available
+      let hasChunkSupport = true;
+      try {
+        await this.device.readCharacteristicForService(AIRQ_SERVICE_UUID, CHUNK_INFO_UUID);
+      } catch (error) {
+        console.warn('Chunk characteristics not available, falling back to single read');
+        hasChunkSupport = false;
+      }
+
+      if (!hasChunkSupport) {
+        return this.downloadLoggedDataMobileLegacy();
+      }
+
+      // Step 1: Request data preparation (send -1 to chunk request)
+      console.log('Requesting data preparation...');
+      this.emit('downloadProgress', { stage: 'preparing', progress: 0, message: 'Preparing data for download...' });
+      
+      const prepareValue = btoa('-1');
+      await this.device.writeCharacteristicWithResponseForService(
+        AIRQ_SERVICE_UUID,
+        CHUNK_REQUEST_UUID,
+        prepareValue
+      );
+      
+      // Small delay to let Arduino prepare the data
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 2: Get chunk info
+      this.emit('downloadProgress', { stage: 'info', progress: 5, message: 'Getting chunk information...' });
+      
+      const chunkInfoChar = await this.device.readCharacteristicForService(
+        AIRQ_SERVICE_UUID,
+        CHUNK_INFO_UUID
+      );
+      
+      const chunkInfoString = this.decodeBase64ToString(chunkInfoChar.value);
+      const [totalChunks, currentChunk] = chunkInfoString.split(',').map(s => parseInt(s.trim()));
+      
+      console.log(`Data prepared for chunked transfer: ${totalChunks} chunks`);
+
+      if (totalChunks <= 0) {
+        console.log('No data available on device');
+        this.emit('downloadProgress', { stage: 'complete', progress: 100, message: 'No data available on device' });
+        return [];
+      }
+
+      // Step 3: Download all chunks
+      let completeDataString = '';
+      
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        console.log(`Requesting chunk ${chunkIndex}/${totalChunks - 1}...`);
+        
+        const chunkProgress = Math.round(((chunkIndex / totalChunks) * 90) + 10); // 10-100% range
+        this.emit('downloadProgress', { 
+          stage: 'downloading', 
+          progress: chunkProgress, 
+          message: `Downloading chunk ${chunkIndex + 1} of ${totalChunks}...`,
+          currentChunk: chunkIndex + 1,
+          totalChunks: totalChunks
+        });
+        
+        // Request specific chunk
+        const chunkRequestValue = btoa(chunkIndex.toString());
+        await this.device.writeCharacteristicWithResponseForService(
+          AIRQ_SERVICE_UUID,
+          CHUNK_REQUEST_UUID,
+          chunkRequestValue
+        );
+        
+        // Small delay between chunk requests
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Read the chunk data
+        const chunkChar = await this.device.readCharacteristicForService(
+          AIRQ_SERVICE_UUID,
+          LOGGED_DATA_UUID
+        );
+        
+        if (chunkChar?.value) {
+          const chunkData = this.decodeBase64ToString(chunkChar.value);
+          console.log(`Received chunk ${chunkIndex}: ${chunkData.length} characters`);
+          completeDataString += chunkData;
+        }
+      }
+
+      console.log(`Complete data assembled: ${completeDataString.length} characters`);
+      this.emit('downloadProgress', { stage: 'parsing', progress: 95, message: 'Parsing downloaded data...' });
+      
+      const parsedData = this.parseLoggedData(completeDataString);
+      
+      this.emit('downloadProgress', { 
+        stage: 'complete', 
+        progress: 100, 
+        message: `Download complete! Received ${parsedData.length} entries`,
+        totalEntries: parsedData.length
+      });
+      
+      console.log(`Chunked transfer completed successfully. Received ${parsedData.length} entries`);
+      return parsedData;
+      
+    } catch (error) {
+      console.error('Chunked download failed, trying legacy method:', error);
+      this.emit('downloadProgress', { stage: 'error', progress: 0, message: 'Chunked download failed, trying legacy method...' });
+      return this.downloadLoggedDataMobileLegacy();
+    }
+  }
+
+  // Fallback for devices without chunking support  
+  async downloadLoggedDataMobileLegacy() {
+    try {
+      this.emit('downloadProgress', { stage: 'downloading', progress: 50, message: 'Downloading data (legacy mode)...' });
+      
+      const characteristic = await this.device.readCharacteristicForService(
+        AIRQ_SERVICE_UUID,
+        LOGGED_DATA_UUID
+      );
+      
+      if (characteristic?.value) {
+        const dataString = this.decodeBase64ToString(characteristic.value);
+        console.log('Raw logged data received (Legacy Mobile):', dataString);
+        
+        this.emit('downloadProgress', { stage: 'parsing', progress: 90, message: 'Parsing downloaded data...' });
+        const parsedData = this.parseLoggedData(dataString);
+        
+        this.emit('downloadProgress', { 
+          stage: 'complete', 
+          progress: 100, 
+          message: `Download complete! Received ${parsedData.length} entries`,
+          totalEntries: parsedData.length
+        });
+        
+        return parsedData;
+      } else {
+        throw new Error('No logged data received from device');
+      }
+    } catch (error) {
+      console.error('Legacy Mobile BLE logged data read error:', error);
+      throw error;
+    }
+  }
+
+  // Parse logged data string into structured array
+  parseLoggedData(dataString) {
+    if (!dataString || dataString.trim() === '') {
+      return [];
+    }
+
+    // Data format: "timestamp,pm1,pm25,pm10,battery;"
+    // Multiple entries separated by semicolons
+    const entries = dataString.split(';').filter(entry => entry.trim() !== '');
+    
+    const parsedData = entries.map(entry => {
+      const values = entry.split(',').map(val => val.trim());
+      
+      if (values.length >= 5) {
+        const timestamp = parseInt(values[0]) || 0;
+        const pm1 = parseFloat(values[1]) || 0;
+        const pm25 = parseFloat(values[2]) || 0;
+        const pm10 = parseFloat(values[3]) || 0;
+        const battery = parseFloat(values[4]) || 0;
+        const aqi = this.calculateAQI(pm25);
+        
+        // Handle both Unix timestamps (from RTC) and millis timestamps (legacy)
+        let date;
+        if (timestamp > 1609459200) { // After Jan 1, 2021 - likely Unix timestamp
+          date = new Date(timestamp * 1000);
+        } else {
+          // Legacy millis timestamp or invalid - use relative time
+          date = new Date(Date.now() - (timestamp / 1000));
+        }
+        
+        return {
+          timestamp: timestamp,
+          date: date,
+          pm1: pm1,
+          pm25: pm25,
+          pm10: pm10,
+          battery: battery,
+          aqi: aqi
+        };
+      }
+      return null;
+    }).filter(entry => entry !== null);
+
+    console.log(`Parsed ${parsedData.length} logged data entries`);
+    return parsedData;
+  }
+
+  // Convert logged data to CSV format for download
+  loggedDataToCSV(loggedData) {
+    if (!loggedData || loggedData.length === 0) {
+      return '';
+    }
+
+    const headers = ['Timestamp', 'Date', 'PM1.0 (μg/m³)', 'PM2.5 (μg/m³)', 'PM10 (μg/m³)', 'Battery (%)', 'AQI'];
+    const csvRows = [headers.join(',')];
+
+    loggedData.forEach(entry => {
+      const row = [
+        entry.timestamp,
+        entry.date.toISOString(),
+        entry.pm1,
+        entry.pm25,
+        entry.pm10,
+        entry.battery,
+        entry.aqi
+      ];
+      csvRows.push(row.join(','));
+    });
+
+    return csvRows.join('\n');
+  }
+
+  // Download logged data as a CSV file (web only)
+  downloadLoggedDataAsFile(loggedData, filename = 'airq_logged_data.csv') {
+    if (!this.isWeb) {
+      console.warn('File download only available on web platform');
+      return false;
+    }
+
+    try {
+      const csvContent = this.loggedDataToCSV(loggedData);
+      
+      if (!csvContent) {
+        throw new Error('No data to download');
+      }
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      
+      if (link.download !== undefined) {
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Failed to download file:', error);
+      return false;
+    }
+  }
+
+  // Get chunked transfer statistics (for debugging)
+  getChunkTransferStats() {
+    return {
+      platform: this.isWeb ? 'web' : 'mobile',
+      hasChunkSupport: Boolean(this.chunkInfoCharacteristic && this.chunkRequestCharacteristic),
+      chunkInfoAvailable: Boolean(this.chunkInfoCharacteristic),
+      chunkRequestAvailable: Boolean(this.chunkRequestCharacteristic),
+      loggedDataAvailable: Boolean(this.loggedDataCharacteristic)
+    };
+  }
+
+  // Debug function to list all available characteristics
+  async debugListCharacteristics() {
+    if (!this.isWeb || !this.server || !this.server.connected) {
+      console.log('Cannot list characteristics - not connected via Web Bluetooth');
+      return;
+    }
+
+    try {
+      console.log('=== LISTING ALL CHARACTERISTICS ===');
+      const airqService = await this.server.getPrimaryService(AIRQ_SERVICE_UUID);
+      
+      // Try to get all known characteristics
+      const knownCharacteristics = [
+        { name: 'Live Data', uuid: LIVE_DATA_UUID },
+        { name: 'Logged Data', uuid: LOGGED_DATA_UUID },
+        { name: 'Battery', uuid: BATTERY_UUID },
+        { name: 'Power Mode', uuid: POWER_MODE_UUID },
+        { name: 'RTC Time', uuid: RTC_TIME_UUID },
+        { name: 'Chunk Info', uuid: CHUNK_INFO_UUID },
+        { name: 'Chunk Request', uuid: CHUNK_REQUEST_UUID }
+      ];
+
+      for (const char of knownCharacteristics) {
+        try {
+          const characteristic = await airqService.getCharacteristic(char.uuid);
+          console.log(`✅ ${char.name}: Found (${char.uuid})`);
+        } catch (error) {
+          console.log(`❌ ${char.name}: NOT FOUND (${char.uuid}) - ${error.message}`);
+        }
+      }
+      console.log('=== END CHARACTERISTIC LIST ===');
+    } catch (error) {
+      console.error('Failed to list characteristics:', error);
     }
   }
 }

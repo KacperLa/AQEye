@@ -7,10 +7,11 @@ import {
   Animated,
   Platform,
 } from 'react-native';
+import WebCompatiblePressable from './WebCompatiblePressable';
 
 const { width } = Dimensions.get('window');
 
-const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 0, type }) => {
+const MetricCard = ({ title, value, unit, status, precision = 0, type, onViewGraph, hasGraphData = false }) => {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const valueAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
@@ -91,7 +92,7 @@ const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 
     }
   };
   const getStatusText = (title, value, status) => {
-    if (status === 'invalid' || !value || value === 0 || isNaN(value)) {
+    if (status === 'invalid' || isNaN(value)) {
       return 'No reading - checking sensor';
     }
 
@@ -132,19 +133,6 @@ const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 
     }
   };
 
-  const formatLastUpdate = (timestamp) => {
-    if (!timestamp) return 'Never';
-    const now = new Date();
-    const update = new Date(timestamp);
-    const diffMs = now - update;
-    const diffSecs = Math.floor(diffMs / 1000);
-    
-    if (diffSecs < 5) return 'Just now';
-    if (diffSecs < 60) return `${diffSecs}s ago`;
-    if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)}m ago`;
-    return `${Math.floor(diffSecs / 3600)}h ago`;
-  };
-
   const getGlowColor = () => {
     switch (type) {
       case 'pm25': return '#4ade80'; // green for PM2.5
@@ -167,20 +155,21 @@ const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 
       ]}
     >
       <View style={styles.header}>
-        <Animated.Text 
-          style={[
-            styles.icon, 
-            type === 'heart-rate' && value > 0 ? {
-              transform: [{ scale: pulseAnim }]
-            } : {}
-          ]}
-        >
-          {icon}
-        </Animated.Text>
-        <Text style={styles.title}>{title}</Text>
-        {value > 0 && (
-          <View style={[styles.liveDot, { backgroundColor: getGlowColor() }]} />
-        )}
+        <Text style={styles.title}>{title} {unit}</Text>
+        <View style={styles.headerRight}>
+          {value > 0 && (
+            <View style={[styles.liveDot, { backgroundColor: getGlowColor() }]} />
+          )}
+          {/* High Contrast Graph Button in Top Right */}
+          {hasGraphData && onViewGraph && (
+            <WebCompatiblePressable
+              style={styles.topRightGraphButton}
+              onPress={() => onViewGraph(type, title)}
+            >
+              <Text style={styles.topRightGraphButtonText}>📊</Text>
+            </WebCompatiblePressable>
+          )}
+        </View>
       </View>
       
       <View style={styles.valueContainer}>
@@ -199,7 +188,6 @@ const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 
         >
           {(value && !isNaN(value)) ? (precision > 0 ? value.toFixed(precision) : Math.round(value)) : 0}
         </Animated.Text>
-        <Text style={styles.unit}>{unit}</Text>
       </View>
       
       <View style={styles.statusContainer}>
@@ -219,25 +207,20 @@ const MetricCard = ({ title, value, unit, status, icon, lastUpdate, precision = 
           {getStatusText(title, value, status)}
         </Text>
       </View>
-      
-      {lastUpdate && (
-        <Text style={styles.updateText}>
-          {formatLastUpdate(lastUpdate)}
-        </Text>
-      )}
     </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    width: (width - 60) / 2,
-    margin: 10,
+    width: '100%',
+    marginVertical: 10,
+    marginHorizontal: 0,
     padding: 20,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    backgroundColor: 'rgba(139, 69, 19, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 1)',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -256,11 +239,13 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 15,
   },
-  icon: {
-    fontSize: 24,
-    marginRight: 10,
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   title: {
     fontSize: 16,
@@ -272,7 +257,24 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    marginLeft: 8,
+  },
+  topRightGraphButton: {
+    backgroundColor: '#50fa7b',
+    borderRadius: 8,
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#50fa7b',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  topRightGraphButtonText: {
+    fontSize: 14,
+    color: '#0a0a0f',
+    fontWeight: '700',
   },
   valueContainer: {
     flexDirection: 'row',
@@ -280,7 +282,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   value: {
-    fontSize: 32,
+    fontSize: 100,
     fontWeight: 'bold',
     color: '#ffffff',
   },
@@ -305,12 +307,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     flex: 1,
-  },
-  updateText: {
-    fontSize: 11,
-    color: '#ffffff',
-    opacity: 0.6,
-    textAlign: 'center',
   },
 });
 
