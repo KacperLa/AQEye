@@ -1220,28 +1220,28 @@ class PlatformBluetoothService {
     }
 
     try {
-      console.log('=== STARTING CHUNKED TRANSFER ===');
+      console.log('=== STARTING CHUNKED TRANSFER (STREAM MODE) ===');
       // Step 1: Request data preparation (send -1 to chunk request)
       console.log('Step 1: Requesting data preparation...');
       this.emit('downloadProgress', { stage: 'preparing', progress: 0, message: 'Preparing data for download...' });
-      
+
       const encoder = new TextEncoder();
       await this.chunkRequestCharacteristic.writeValue(encoder.encode('-1'));
       console.log('Data preparation request sent');
-      
+
       // Small delay to let Arduino prepare the data
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // Step 2: Get chunk info (totalChunks, currentChunk)
+      // Step 2: Get chunk info (totalChunks)
       console.log('Step 2: Reading chunk info...');
       this.emit('downloadProgress', { stage: 'info', progress: 5, message: 'Getting chunk information...' });
-      
+
       const chunkInfoValue = await this.chunkInfoCharacteristic.readValue();
       const chunkInfoString = new TextDecoder().decode(chunkInfoValue);
       console.log('Raw chunk info received:', chunkInfoString);
-      const [totalChunks, currentChunk] = chunkInfoString.split(',').map(s => parseInt(s.trim()));
-      
-      console.log(`Data prepared for chunked transfer: ${totalChunks} chunks, current: ${currentChunk}`);
+      const [totalChunks] = chunkInfoString.split(',').map(s => parseInt(s.trim()));
+
+      console.log(`Data prepared for chunked transfer: ${totalChunks} chunks`);
 
       if (totalChunks <= 0) {
         console.log('No data available on device');
@@ -1249,35 +1249,53 @@ class PlatformBluetoothService {
         return [];
       }
 
-      // Step 3: Download all chunks
+      await this.loggedDataCharacteristic.startNotifications();
+
+      // Helper to wait for next notification
+      const waitForNotification = () => {
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            this.loggedDataCharacteristic.removeEventListener('characteristicvaluechanged', handler);
+            reject(new Error('Notification timeout'));
+          }, 2000);
+          const handler = (event) => {
+            clearTimeout(timeoutId);
+            this.loggedDataCharacteristic.removeEventListener('characteristicvaluechanged', handler);
+            const value = event.target.value;
+            const data = new TextDecoder().decode(value);
+            resolve(data);
+          };
+          this.loggedDataCharacteristic.addEventListener('characteristicvaluechanged', handler);
+        });
+      };
+
+      // Step 3: Download all chunks using notifications
       let completeDataString = '';
-      
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        console.log(`Step 3.${chunkIndex + 1}: Requesting chunk ${chunkIndex}/${totalChunks - 1}...`);
-        
-        const chunkProgress = Math.round(((chunkIndex / totalChunks) * 90) + 10); // 10-100% range
-        this.emit('downloadProgress', { 
-          stage: 'downloading', 
-          progress: chunkProgress, 
+      let chunkIndex = 0;
+
+      while (chunkIndex < totalChunks) {
+        const chunkProgress = Math.round(((chunkIndex / totalChunks) * 90) + 10);
+        this.emit('downloadProgress', {
+          stage: 'downloading',
+          progress: chunkProgress,
           message: `Downloading chunk ${chunkIndex + 1} of ${totalChunks}...`,
           currentChunk: chunkIndex + 1,
           totalChunks: totalChunks
         });
-        
-        // Request specific chunk
+
         await this.chunkRequestCharacteristic.writeValue(encoder.encode(chunkIndex.toString()));
-        console.log(`Chunk ${chunkIndex} request sent`);
-        
-        // Small delay between chunk requests
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Read the chunk data
-        const chunkValue = await this.loggedDataCharacteristic.readValue();
-        const chunkData = new TextDecoder().decode(chunkValue);
-        
-        console.log(`Received chunk ${chunkIndex}: ${chunkData.length} characters - "${chunkData.substring(0, 100)}${chunkData.length > 100 ? '...' : ''}"`);
-        completeDataString += chunkData;
+
+        try {
+          const chunkData = await waitForNotification();
+          console.log(`Received chunk ${chunkIndex}: ${chunkData.length} characters`);
+          completeDataString += chunkData;
+          chunkIndex++;
+        } catch (err) {
+          console.warn(`Chunk ${chunkIndex} timeout, retrying...`);
+        }
       }
+
+      await this.loggedDataCharacteristic.stopNotifications();
 
       console.log(`=== CHUNKED TRANSFER COMPLETE ===`);
       console.log(`Complete data assembled: ${completeDataString.length} characters`);

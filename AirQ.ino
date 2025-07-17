@@ -265,6 +265,9 @@ class MyCharacteristicCallbacks: public BLECharacteristicCallbacks {
           String chunkInfo = String(totalChunks) + "," + String(currentChunk);
           pChunkInfoCharacteristic->setValue(chunkInfo.c_str());
           Serial.println("Chunk request accepted for chunk: " + String(currentChunk) + "/" + String(totalChunks - 1));
+
+          // Immediately send the requested chunk via notification
+          sendLoggedDataChunk();
         } else {
           Serial.println("Invalid chunk request: " + String(requestedChunk) + " (valid range: 0-" + String(totalChunks - 1) + ")");
         }
@@ -551,11 +554,13 @@ bool initBLE() {
                     );
   pLiveDataCharacteristic->addDescriptor(new BLE2902());
 
-  // Logged data characteristic
+  // Logged data characteristic (enable notify for streaming)
   pLoggedDataCharacteristic = pService->createCharacteristic(
                       LOGGED_DATA_UUID,
-                      BLECharacteristic::PROPERTY_READ
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_NOTIFY
                     );
+  pLoggedDataCharacteristic->addDescriptor(new BLE2902());
   pLoggedDataCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
 
   // Battery characteristic
@@ -979,7 +984,8 @@ void sendLoggedDataChunk() {
   }
   
   pLoggedDataCharacteristic->setValue(chunkData.c_str());
-  Serial.println("Chunk data (" + String(chunkData.length()) + " chars) sent successfully");
+  pLoggedDataCharacteristic->notify();
+  Serial.println("Chunk data (" + String(chunkData.length()) + " chars) notified successfully");
 }
 
 void sendLoggedData() {
