@@ -688,7 +688,14 @@ class PlatformBluetoothService {
 
   // Helper methods for mobile BLE
   decodeBase64(base64String) {
-    const binaryString = atob(base64String);
+    let binaryString = '';
+    if (typeof atob === 'function') {
+      binaryString = atob(base64String);
+    } else if (typeof Buffer !== 'undefined') {
+      binaryString = Buffer.from(base64String, 'base64').toString('binary');
+    } else {
+      throw new Error('Base64 decoding not supported');
+    }
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
@@ -697,7 +704,21 @@ class PlatformBluetoothService {
   }
 
   decodeBase64ToString(base64String) {
-    return atob(base64String);
+    if (typeof atob === 'function') {
+      return atob(base64String);
+    } else if (typeof Buffer !== 'undefined') {
+      return Buffer.from(base64String, 'base64').toString('utf-8');
+    }
+    throw new Error('Base64 decoding not supported');
+  }
+
+  encodeBase64(str) {
+    if (typeof btoa === 'function') {
+      return btoa(str);
+    } else if (typeof Buffer !== 'undefined') {
+      return Buffer.from(str, 'binary').toString('base64');
+    }
+    throw new Error('Base64 encoding not supported');
   }
 
   // Disconnect from device
@@ -869,7 +890,7 @@ class PlatformBluetoothService {
         }
       } else {
         if (this.device) {
-          const base64Value = btoa(value);
+          const base64Value = this.encodeBase64(value);
           await this.device.writeCharacteristicWithResponseForService(
             AIRQ_SERVICE_UUID,
             POWER_MODE_UUID,
@@ -961,7 +982,7 @@ class PlatformBluetoothService {
     }
 
     try {
-      const base64Value = btoa(timestamp.toString());
+      const base64Value = this.encodeBase64(timestamp.toString());
       await this.device.writeCharacteristicWithResponseForService(
         AIRQ_SERVICE_UUID,
         RTC_TIME_UUID,
@@ -1335,7 +1356,7 @@ class PlatformBluetoothService {
       console.log('Requesting data preparation...');
       this.emit('downloadProgress', { stage: 'preparing', progress: 0, message: 'Preparing data for download...' });
       
-      const prepareValue = btoa('-1');
+      const prepareValue = this.encodeBase64('-1');
       await this.device.writeCharacteristicWithResponseForService(
         AIRQ_SERVICE_UUID,
         CHUNK_REQUEST_UUID,
@@ -1380,7 +1401,7 @@ class PlatformBluetoothService {
         });
         
         // Request specific chunk
-        const chunkRequestValue = btoa(chunkIndex.toString());
+        const chunkRequestValue = this.encodeBase64(chunkIndex.toString());
         await this.device.writeCharacteristicWithResponseForService(
           AIRQ_SERVICE_UUID,
           CHUNK_REQUEST_UUID,
